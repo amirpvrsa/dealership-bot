@@ -185,3 +185,4 @@ The bot scores applications out of 10 based on:
 All API errors are logged with timestamps for debugging. The bot will not crash on API errors - it will continue running and log the issue.
 
 Polling runs every 60 seconds and checks all pending emails in the queue.
+# dealership-bot

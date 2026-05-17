@@ -23,6 +23,9 @@ let offset = 0;
 // ---------- GM approval queue ----------
 const pendingApprovals = new Map();
 
+// ---------- FM assignment queue ----------
+const fmAssignments = new Map(); // email -> { fmName, contact, formProperties, scoreResult, assignedAt, messageId, chatId, timeoutId }
+
 // ---------- logging ----------
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -371,27 +374,81 @@ async function onCallbackQuery(query) {
     
     const { email, contact, formProperties, scoreResult, fmName, salespersonChatId, queuedEntry } = approval;
     
-    // Notify the Finance Manager
-    const result = await notifier.notifyFinanceManager(contact, formProperties, scoreResult, fmName);
-    log(`Notification result: dmSent=${result.dmSent} groupSent=${result.groupSent}`);
+    // Get FM's Telegram ID from managers
+    const managersPath = path.join(__dirname, 'config', 'managers.json');
+    let fmChatId = null;
+    try {
+      const managersData = fs.readFileSync(managersPath, 'utf-8');
+      const managers = JSON.parse(managersData);
+      fmChatId = managers[fmName];
+    } catch (e) {
+      log(`Could not read managers.json: ${e.message}`);
+    }
+    
+    if (!fmChatId) {
+      await send(chatId, `⚠️ Could not find Telegram ID for Finance Manager "${fmName}". Please check managers.json.`);
+      return;
+    }
     
     // Update GM's message
-    const updatedText = query.message.text + '\n\n✅ APPROVED - Finance Manager notified!';
+    const updatedText = query.message.text + '\n\n✅ APPROVED - Awaiting FM response (15 min timeout)';
     await tg('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text: updatedText,
-      reply_markup: JSON.stringify({ inline_keyboard: [] }) // Remove buttons
+      reply_markup: JSON.stringify({ inline_keyboard: [] })
     });
     
-    // Notify salesperson that FM has been notified
+    // Send to FM with Accept/Busy buttons
+    const fmMessage = `🚨 *NEW APPLICATION ASSIGNED*\n\n` +
+      `👤 Customer: ${contact.properties.firstname} ${contact.properties.lastname}\n` +
+      `📧 Email: ${email}\n` +
+      `📱 Phone: ${contact.properties.phone || 'N/A'}\n\n` +
+      `💰 Income: $${formProperties.Your_monthly_income || 'N/A'}\n` +
+      `🏢 Company: ${formProperties.Company || 'N/A'}\n` +
+      `📊 Credit: ${formProperties.Estimated_Credit_Rating || 'N/A'}\n` +
+      `📈 Score: ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}\n\n` +
+      `⏱️ *You have 15 minutes to respond*\n\n` +
+      `Tap button below:`;
+    
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '✅ ACCEPT - I will handle this', callback_data: `fm_accept_${email}` }],
+        [{ text: '❌ BUSY - Pass to next FM', callback_data: `fm_busy_${email}` }]
+      ]
+    };
+    
+    const fmResponse = await tg('sendMessage', {
+      chat_id: fmChatId,
+      text: fmMessage,
+      reply_markup: JSON.stringify(keyboard)
+    });
+    
+    // Store assignment with 15-minute timeout (15 * 60 * 1000 = 900000 ms)
+    const timeoutId = setTimeout(async () => {
+      await handleFMTimeout(email, fmName);
+    }, 15 * 60 * 1000);
+    
+    fmAssignments.set(email, {
+      fmName,
+      fmChatId,
+      contact,
+      formProperties,
+      scoreResult,
+      salespersonChatId,
+      assignedAt: Date.now(),
+      messageId: fmResponse.result?.message_id,
+      timeoutId
+    });
+    
+    // Notify salesperson that FM assignment is pending
     if (salespersonChatId) {
-      await send(salespersonChatId, `✅ GM Approved! Finance Manager (${fmName}) has been notified for ${email}. Score: ${scoreResult.score.toFixed(1)}/10`);
+      await send(salespersonChatId, `✅ GM Approved! Finance Manager (${fmName}) has been assigned for ${email}. Waiting for their response (15 min timeout). Score: ${scoreResult.score.toFixed(1)}/10`);
     }
     
     // Remove from pending approvals
     pendingApprovals.delete(approvalId);
-    log(`GM approved application for ${email}, FM notified`);
+    log(`GM approved application for ${email}, assigned to ${fmName} (ID: ${fmChatId})`);
     
   } else if (data.startsWith('reject_')) {
     const approvalId = data.replace('reject_', '');
@@ -421,6 +478,183 @@ async function onCallbackQuery(query) {
     // Remove from pending approvals
     pendingApprovals.delete(approvalId);
     log(`GM rejected application for ${email}`);
+    
+  } else if (data.startsWith('fm_accept_')) {
+    // FM accepted the assignment
+    const email = data.replace('fm_accept_', '');
+    const assignment = fmAssignments.get(email);
+    
+    if (!assignment) {
+      await send(chatId, '⚠️ This assignment has expired or been reassigned.');
+      return;
+    }
+    
+    const { fmName, contact, formProperties, scoreResult, salespersonChatId, messageId } = assignment;
+    
+    // Clear the timeout
+    if (assignment.timeoutId) {
+      clearTimeout(assignment.timeoutId);
+    }
+    
+    // Update FM's message
+    const updatedText = query.message.text + '\n\n✅ *ACCEPTED* - You are now handling this application!';
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: updatedText,
+      reply_markup: JSON.stringify({ inline_keyboard: [] })
+    });
+    
+    // Notify salesperson that FM accepted
+    if (salespersonChatId) {
+      await send(salespersonChatId, `🎉 Finance Manager ${fmName} has *ACCEPTED* the application for ${email}! They will contact the customer.`);
+    }
+    
+    // Remove from assignments
+    fmAssignments.delete(email);
+    log(`FM ${fmName} accepted assignment for ${email}`);
+    
+  } else if (data.startsWith('fm_busy_')) {
+    // FM is busy - pass to next FM
+    const email = data.replace('fm_busy_', '');
+    const assignment = fmAssignments.get(email);
+    
+    if (!assignment) {
+      await send(chatId, '⚠️ This assignment has expired or been reassigned.');
+      return;
+    }
+    
+    const { fmName, contact, formProperties, scoreResult, salespersonChatId, messageId, timeoutId } = assignment;
+    
+    // Clear the timeout
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    
+    // Update FM's message
+    const updatedText = query.message.text + '\n\n❌ *DECLINED* - Assignment passed to next FM';
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: updatedText,
+      reply_markup: JSON.stringify({ inline_keyboard: [] })
+    });
+    
+    log(`FM ${fmName} declined assignment for ${email}`);
+    
+    // Get next FM and reassign
+    await reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId);
+  }
+}
+
+// Handle FM timeout - reassign to next FM
+async function handleFMTimeout(email, currentFmName) {
+  const assignment = fmAssignments.get(email);
+  if (!assignment) return; // Already handled
+  
+  const { fmChatId, messageId, contact, formProperties, scoreResult, salespersonChatId } = assignment;
+  
+  // Update FM's message to show timeout
+  await tg('editMessageText', {
+    chat_id: fmChatId,
+    message_id: messageId,
+    text: `⏱️ *TIMEOUT* - 15 minutes passed. Assignment automatically passed to next FM.`,
+    reply_markup: JSON.stringify({ inline_keyboard: [] })
+  });
+  
+  log(`FM ${currentFmName} timed out for ${email}`);
+  
+  // Reassign to next FM
+  await reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId, currentFmName);
+}
+
+// Reassign application to next FM
+async function reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId, previousFmName = null) {
+  try {
+    // Get next FM from sheets
+    let nextFmName = await sheets.getNextFinanceManager();
+    
+    // Skip if same as previous
+    if (nextFmName === previousFmName) {
+      await send(FINANCE_CHAT_ID, `⚠️ Could not reassign ${email} - only one FM available in rotation.`);
+      if (salespersonChatId) {
+        await send(salespersonChatId, `⚠️ Application for ${email} could not be reassigned. Finance team will handle manually.`);
+      }
+      fmAssignments.delete(email);
+      return;
+    }
+    
+    // Get FM's Telegram ID
+    const managersPath = path.join(__dirname, 'config', 'managers.json');
+    let fmChatId = null;
+    try {
+      const managersData = fs.readFileSync(managersPath, 'utf-8');
+      const managers = JSON.parse(managersData);
+      fmChatId = managers[nextFmName];
+    } catch (e) {
+      log(`Could not read managers.json: ${e.message}`);
+    }
+    
+    if (!fmChatId) {
+      await send(FINANCE_CHAT_ID, `⚠️ Could not find Telegram ID for Finance Manager "${nextFmName}".`);
+      fmAssignments.delete(email);
+      return;
+    }
+    
+    // Send to new FM
+    const fmMessage = `🚨 *NEW APPLICATION REASSIGNED*\n\n` +
+      `👤 Customer: ${contact.properties.firstname} ${contact.properties.lastname}\n` +
+      `📧 Email: ${email}\n` +
+      `📱 Phone: ${contact.properties.phone || 'N/A'}\n\n` +
+      `💰 Income: $${formProperties.Your_monthly_income || 'N/A'}\n` +
+      `🏢 Company: ${formProperties.Company || 'N/A'}\n` +
+      `📊 Credit: ${formProperties.Estimated_Credit_Rating || 'N/A'}\n` +
+      `📈 Score: ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}\n\n` +
+      `⚠️ *Previous FM was unavailable*\n` +
+      `⏱️ *You have 15 minutes to respond*\n\n` +
+      `Tap button below:`;
+    
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '✅ ACCEPT - I will handle this', callback_data: `fm_accept_${email}` }],
+        [{ text: '❌ BUSY - Pass to next FM', callback_data: `fm_busy_${email}` }]
+      ]
+    };
+    
+    const fmResponse = await tg('sendMessage', {
+      chat_id: fmChatId,
+      text: fmMessage,
+      reply_markup: JSON.stringify(keyboard)
+    });
+    
+    // Set new timeout
+    const timeoutId = setTimeout(async () => {
+      await handleFMTimeout(email, nextFmName);
+    }, 15 * 60 * 1000);
+    
+    // Update assignment
+    fmAssignments.set(email, {
+      fmName: nextFmName,
+      fmChatId,
+      contact,
+      formProperties,
+      scoreResult,
+      salespersonChatId,
+      assignedAt: Date.now(),
+      messageId: fmResponse.result?.message_id,
+      timeoutId
+    });
+    
+    // Notify salesperson
+    if (salespersonChatId) {
+      await send(salespersonChatId, `🔄 Reassigned! Finance Manager (${nextFmName}) has been assigned for ${email}. Previous FM was unavailable. Waiting for response (15 min).`);
+    }
+    
+    log(`Reassigned ${email} to ${nextFmName}`);
+    
+  } catch (e) {
+    log(`Error reassigning to next FM: ${e.message}`);
+    fmAssignments.delete(email);
   }
 }
 

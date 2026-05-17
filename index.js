@@ -466,11 +466,20 @@ async function onCallbackQuery(query) {
       ]
     };
     
-    const fmResponse = await tg('sendMessage', {
-      chat_id: fmChatId,
-      text: fmMessage,
-      reply_markup: JSON.stringify(keyboard)
-    });
+    let fmResponse;
+    try {
+      fmResponse = await tg('sendMessage', {
+        chat_id: fmChatId,
+        text: fmMessage,
+        reply_markup: JSON.stringify(keyboard)
+      });
+      log(`FM notification sent to ${fmName} (${fmChatId})`);
+    } catch (sendErr) {
+      log(`Failed to send FM notification to ${fmName} (${fmChatId}): ${sendErr.message}`);
+      await send(chatId, `⚠️ Failed to notify ${fmName}. Error: ${sendErr.message}`);
+      pendingApprovals.delete(approvalId);
+      return;
+    }
     
     // 15-minute timeout
     const timeoutId = setTimeout(async () => {

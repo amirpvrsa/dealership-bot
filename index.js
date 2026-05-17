@@ -566,6 +566,22 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
   try {
     let nextFmName = await sheets.getNextFinanceManager();
     
+    // Fallback: if Google Sheets returns null, use first FM from managers.json
+    if (!nextFmName || nextFmName === 'null') {
+      try {
+        const managersPath = path.join(__dirname, 'config', 'managers.json');
+        const managersData = fs.readFileSync(managersPath, 'utf-8');
+        const managers = JSON.parse(managersData);
+        const names = Object.keys(managers);
+        if (names.length > 0) {
+          nextFmName = names[0];
+          log(`Google Sheets returned null in reassign, using first FM from managers.json: ${nextFmName}`);
+        }
+      } catch (e2) {
+        log(`Could not read managers.json fallback in reassign: ${e2.message}`);
+      }
+    }
+    
     if (nextFmName === previousFmName) {
       await send(FINANCE_CHAT_ID, `⚠️ Could not reassign ${email} - only one FM available.`);
       if (salespersonChatId) {
@@ -721,7 +737,25 @@ async function handleHubspotWebhook(req, res) {
         fmName = await sheets.getNextFinanceManager();
       } catch (e) {
         log(`Failed to read next FM from Sheets: ${e.message}`);
-        fmName = 'Unknown';
+      }
+      
+      // Fallback: if Google Sheets returns null, use first FM from managers.json
+      if (!fmName || fmName === 'null') {
+        try {
+          const managersPath = path.join(__dirname, 'config', 'managers.json');
+          const managersData = fs.readFileSync(managersPath, 'utf-8');
+          const managers = JSON.parse(managersData);
+          const names = Object.keys(managers);
+          if (names.length > 0) {
+            fmName = names[0];
+            log(`Google Sheets returned null, using first FM from managers.json: ${fmName}`);
+          } else {
+            fmName = 'Unknown';
+          }
+        } catch (e2) {
+          log(`Could not read managers.json fallback: ${e2.message}`);
+          fmName = 'Unknown';
+        }
       }
 
       // Store for GM approval

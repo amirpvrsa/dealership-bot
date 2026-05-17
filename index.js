@@ -114,6 +114,30 @@ async function sendWithKeyboard(chatId, text, keyboard) {
   await tg('sendMessage', { chat_id: chatId, text, reply_markup: JSON.stringify(keyboard) });
 }
 
+// Send message with fixed reply keyboard (persistent buttons at bottom)
+async function sendWithReplyKeyboard(chatId, text, keyboard) {
+  log(`SEND → ${chatId}: ${text.substring(0, 60)} [with reply keyboard]`);
+  await tg('sendMessage', { 
+    chat_id: chatId, 
+    text, 
+    reply_markup: JSON.stringify({
+      keyboard: keyboard,
+      resize_keyboard: true,
+      one_time_keyboard: false
+    })
+  });
+}
+
+// Remove reply keyboard
+async function sendWithoutKeyboard(chatId, text) {
+  log(`SEND → ${chatId}: ${text.substring(0, 60)} [remove keyboard]`);
+  await tg('sendMessage', { 
+    chat_id: chatId, 
+    text, 
+    reply_markup: JSON.stringify({ remove_keyboard: true })
+  });
+}
+
 // ---------- Telegram command handler ----------
 async function onMessage(msg) {
   const chatId = msg.chat.id;
@@ -125,19 +149,81 @@ async function onMessage(msg) {
   const arg = rest.join(' ').trim();
   const email = arg.toLowerCase();
 
+  // Handle reply keyboard buttons
+  if (text === '➕ New App') {
+    await send(chatId, '📝 Please type: /newapp <email>\n\nExample: /newapp customer@gmail.com');
+    return;
+  }
+  
+  if (text === '📋 Status') {
+    const emails = Array.from(pendingQueue.keys());
+    if (emails.length === 0) {
+      await send(chatId, '📭 No applications are currently being monitored.');
+    } else {
+      let statusMsg = '📋 *Currently Monitoring:*\n\n';
+      emails.forEach((email, idx) => {
+        const entry = pendingQueue.get(email);
+        const timeAgo = Math.floor((Date.now() - entry.startedAt) / 60000);
+        statusMsg += `${idx + 1}. ${email}\n   ⏱️ ${timeAgo} min ago\n\n`;
+      });
+      statusMsg += `Total: ${emails.length} application(s)`;
+      await send(chatId, statusMsg);
+    }
+    return;
+  }
+  
+  if (text === '❌ Cancel') {
+    const emails = Array.from(pendingQueue.keys());
+    if (emails.length === 0) {
+      await send(chatId, '📭 No applications to cancel.');
+    } else {
+      const keyboard = {
+        inline_keyboard: emails.map(email => [
+          { text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }
+        ])
+      };
+      await sendWithKeyboard(chatId, 'Select which application to cancel:', keyboard);
+    }
+    return;
+  }
+  
+  if (text === '📊 My Stats') {
+    const emails = Array.from(pendingQueue.keys());
+    const total = emails.length;
+    const yours = emails.filter(e => pendingQueue.get(e).salespersonChatId === chatId).length;
+    
+    let statsMsg = '📊 *Your Stats*\n\n';
+    statsMsg += `Total Active Applications: ${total}\n`;
+    statsMsg += `Your Applications: ${yours}\n`;
+    if (total > 0) {
+      statsMsg += `\nYou have ${yours} application(s) pending submission.`;
+    }
+    await send(chatId, statsMsg);
+    return;
+  }
+
   if (cmd === '/start') {
-    const keyboard = {
+    // Fixed reply keyboard (persistent at bottom)
+    const replyKeyboard = [
+      ['➕ New App', '📋 Status'],
+      ['❌ Cancel', '📊 My Stats']
+    ];
+    
+    // Send welcome with reply keyboard
+    await sendWithReplyKeyboard(
+      chatId,
+      '🚗 *Dealership Bot*\n\nWelcome! Use the buttons below or type commands.',
+      replyKeyboard
+    );
+    
+    // Also send inline buttons for quick actions
+    const inlineKeyboard = {
       inline_keyboard: [
-        [{ text: '➕ New Application', callback_data: 'menu_newapp' }],
-        [{ text: '📋 View Status', callback_data: 'menu_status' }],
-        [{ text: '❌ Cancel Application', callback_data: 'menu_cancel' }]
+        [{ text: '➕ Start New Application', callback_data: 'menu_newapp' }],
+        [{ text: '📚 How to Use', callback_data: 'menu_help' }]
       ]
     };
-    await sendWithKeyboard(
-      chatId,
-      '🚗 Welcome to Dealership Bot!\n\nWhat would you like to do?',
-      keyboard
-    );
+    await sendWithKeyboard(chatId, 'Quick actions:', inlineKeyboard);
     return;
   }
 

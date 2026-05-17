@@ -209,6 +209,55 @@ async function onMessage(msg) {
     return;
   }
 
+  // Handle /cancel
+  if (text === '/cancel') {
+    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+    await send(chatId, '❌ Cancelled. What would you like to do?');
+    return;
+  }
+
+  // Handle waiting for email state
+  const userState = userStates.get(chatId);
+  if (userState?.state === 'waiting_email') {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailRegex.test(text)) {
+      const email = text.toLowerCase().trim();
+      
+      if (pendingQueue.has(email)) {
+        await send(chatId, `⚠️ Email ${email} is already being monitored.`);
+        userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+        return;
+      }
+      
+      pendingQueue.set(email, {
+        contactId: null,
+        startedAt: Date.now(),
+        salespersonChatId: chatId
+      });
+      saveQueue();
+      
+      // Confirmation with buttons
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '📋 View Status', callback_data: 'menu_status' }],
+          [{ text: '➕ Add Another', callback_data: 'menu_newapp' }]
+        ]
+      };
+      await sendWithKeyboard(
+        chatId,
+        `✅ Now monitoring ${email} for finance application submission.\n\nThe GM will be notified when the customer submits the form.`,
+        keyboard
+      );
+      
+      // Reset state
+      userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+      return;
+    } else {
+      await send(chatId, '⚠️ That doesn\'t look like a valid email. Please try again or type /cancel to abort.\n\nExample: customer@gmail.com');
+      return;
+    }
+  }
+
   if (cmd === '/start') {
     // Fixed reply keyboard (persistent at bottom)
     const replyKeyboard = [

@@ -26,6 +26,9 @@ const pendingApprovals = new Map();
 // ---------- FM assignment queue ----------
 const fmAssignments = new Map(); // email -> { fmName, contact, formProperties, scoreResult, assignedAt, messageId, chatId, timeoutId }
 
+// ---------- User state tracking ----------
+const userStates = new Map(); // chatId -> { state: 'idle'|'waiting_email', timestamp: number }
+
 // ---------- logging ----------
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -309,7 +312,8 @@ async function onCallbackQuery(query) {
   
   // Menu button handlers
   if (data === 'menu_newapp') {
-    await send(chatId, 'Please type: /newapp <email>\n\nExample: /newapp customer@email.com');
+    userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
+    await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
     return;
   }
   

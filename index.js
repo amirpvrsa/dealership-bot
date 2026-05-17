@@ -157,7 +157,8 @@ async function onMessage(msg) {
 
   // Handle reply keyboard buttons
   if (text === '➕ New App') {
-    await send(chatId, '📝 Please type: /newapp <email>\n\nExample: /newapp customer@gmail.com');
+    userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
+    await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
     return;
   }
   

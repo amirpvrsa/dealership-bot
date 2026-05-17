@@ -16,8 +16,12 @@ const notifier = require('./notifier');
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const API = `https://api.telegram.org/bot${TOKEN}`;
 const FINANCE_CHAT_ID = 34198841;
+const GM_CHAT_ID = process.env.GM_CHAT_ID || '8616971268';
 
 let offset = 0;
+
+// ---------- GM approval queue ----------
+const pendingApprovals = new Map();
 
 // ---------- logging ----------
 function log(msg) {
@@ -105,6 +109,11 @@ async function send(chatId, text) {
   await tg('sendMessage', { chat_id: chatId, text });
 }
 
+async function sendWithKeyboard(chatId, text, keyboard) {
+  log(`SEND → ${chatId}: ${text.substring(0, 60)} [with keyboard]`);
+  await tg('sendMessage', { chat_id: chatId, text, reply_markup: JSON.stringify(keyboard) });
+}
+
 // ---------- Telegram command handler ----------
 async function onMessage(msg) {
   const chatId = msg.chat.id;
@@ -182,12 +191,88 @@ async function onMessage(msg) {
   await send(chatId, `You said: ${text}`);
 }
 
+// ---------- Callback query handler (GM approval buttons) ----------
+async function onCallbackQuery(query) {
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+  const data = query.data;
+  
+  log(`CALLBACK ← ${chatId}: ${data}`);
+  
+  // Acknowledge the callback
+  await tg('answerCallbackQuery', { callback_query_id: query.id });
+  
+  if (data.startsWith('approve_')) {
+    const approvalId = data.replace('approve_', '');
+    const approval = pendingApprovals.get(approvalId);
+    
+    if (!approval) {
+      await send(chatId, '⚠️ This application has already been processed or expired.');
+      return;
+    }
+    
+    const { email, contact, formProperties, scoreResult, fmName, salespersonChatId, queuedEntry } = approval;
+    
+    // Notify the Finance Manager
+    const result = await notifier.notifyFinanceManager(contact, formProperties, scoreResult, fmName);
+    log(`Notification result: dmSent=${result.dmSent} groupSent=${result.groupSent}`);
+    
+    // Update GM's message
+    const updatedText = query.message.text + '\n\n✅ APPROVED - Finance Manager notified!';
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: updatedText,
+      reply_markup: JSON.stringify({ inline_keyboard: [] }) // Remove buttons
+    });
+    
+    // Notify salesperson that FM has been notified
+    if (salespersonChatId) {
+      await send(salespersonChatId, `✅ GM Approved! Finance Manager (${fmName}) has been notified for ${email}. Score: ${scoreResult.score.toFixed(1)}/10`);
+    }
+    
+    // Remove from pending approvals
+    pendingApprovals.delete(approvalId);
+    log(`GM approved application for ${email}, FM notified`);
+    
+  } else if (data.startsWith('reject_')) {
+    const approvalId = data.replace('reject_', '');
+    const approval = pendingApprovals.get(approvalId);
+    
+    if (!approval) {
+      await send(chatId, '⚠️ This application has already been processed or expired.');
+      return;
+    }
+    
+    const { email, salespersonChatId } = approval;
+    
+    // Update GM's message
+    const updatedText = query.message.text + '\n\n❌ REJECTED - Application declined';
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: updatedText,
+      reply_markup: JSON.stringify({ inline_keyboard: [] }) // Remove buttons
+    });
+    
+    // Notify salesperson of rejection
+    if (salespersonChatId) {
+      await send(salespersonChatId, `❌ Application for ${email} was rejected by GM.`);
+    }
+    
+    // Remove from pending approvals
+    pendingApprovals.delete(approvalId);
+    log(`GM rejected application for ${email}`);
+  }
+}
+
 async function poll() {
   try {
     const updates = await tg('getUpdates', { offset, timeout: 0 });
     for (const u of updates) {
       offset = u.update_id + 1;
       if (u.message) await onMessage(u.message);
+      if (u.callback_query) await onCallbackQuery(u.callback_query);
     }
   } catch (e) {
     log(`Poll error: ${e.message}`);
@@ -270,19 +355,49 @@ async function handleHubspotWebhook(req, res) {
         fmName = 'Unknown';
       }
 
-      const result = await notifier.notifyFinanceManager(contact, formProperties, scoreResult, fmName);
-      log(`Notification result: dmSent=${result.dmSent} groupSent=${result.groupSent}`);
+      // Store application data for GM approval
+      const approvalId = Date.now().toString();
+      pendingApprovals.set(approvalId, {
+        email,
+        contact,
+        formProperties,
+        scoreResult,
+        fmName,
+        salespersonChatId: queuedEntry.salespersonChatId,
+        queuedEntry
+      });
 
-      // Ping the salesperson
+      // Notify GM with approval button
+      const gmMessage = `📋 NEW APPLICATION FOR APPROVAL\n\n` +
+        `👤 Customer: ${contact.properties.firstname} ${contact.properties.lastname}\n` +
+        `📧 Email: ${email}\n` +
+        `📱 Phone: ${contact.properties.phone || 'N/A'}\n\n` +
+        `💰 Income: $${formProperties.Your_monthly_income || 'N/A'}\n` +
+        `🏢 Company: ${formProperties.Company || 'N/A'}\n` +
+        `📊 Score: ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}\n\n` +
+        `🏦 Assigned FM: ${fmName}\n\n` +
+        `Tap "✅ Approve" to notify ${fmName}`;
+
+      const keyboard = {
+        inline_keyboard: [[
+          { text: '✅ Approve & Notify FM', callback_data: `approve_${approvalId}` },
+          { text: '❌ Reject', callback_data: `reject_${approvalId}` }
+        ]]
+      };
+
+      await sendWithKeyboard(GM_CHAT_ID, gmMessage, keyboard);
+      log(`Sent approval request to GM for ${email}`);
+
+      // Notify salesperson that form was received and is pending GM approval
       if (queuedEntry.salespersonChatId) {
-        await send(queuedEntry.salespersonChatId, `✅ Application submitted for ${email}! Finance team notified (score ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}).`);
+        await send(queuedEntry.salespersonChatId, `✅ Application submitted for ${email}! Waiting for GM approval before notifying Finance team (score ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}).`);
       }
 
       pendingQueue.delete(email);
       saveQueue();
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, matched: true, score: scoreResult.score, fm: fmName }));
+      res.end(JSON.stringify({ ok: true, matched: true, score: scoreResult.score, fm: fmName, status: 'pending_gm_approval' }));
       
     } catch (e) {
       log(`Webhook error: ${e.message}`);

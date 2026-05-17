@@ -126,9 +126,17 @@ async function onMessage(msg) {
   const email = arg.toLowerCase();
 
   if (cmd === '/start') {
-    await send(
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '➕ New Application', callback_data: 'menu_newapp' }],
+        [{ text: '📋 View Status', callback_data: 'menu_status' }],
+        [{ text: '❌ Cancel Application', callback_data: 'menu_cancel' }]
+      ]
+    };
+    await sendWithKeyboard(
       chatId,
-      '🚗 Dealership bot is online.\n\nCommands:\n/newapp <email>\n/status\n/cancel <email>'
+      '🚗 Welcome to Dealership Bot!\n\nWhat would you like to do?',
+      keyboard
     );
     return;
   }
@@ -152,10 +160,18 @@ async function onMessage(msg) {
       salespersonChatId: chatId
     });
     saveQueue();
-    await send(chatId, `✅ Now monitoring ${email} for finance application submission.`);
-    await send(
-      FINANCE_CHAT_ID,
-      `📋 New upcoming application\n👤 Sales: @${msg.from?.username || 'unknown'}\n📧 Email: ${email}\n\nWaiting for HubSpot form submission...`
+    
+    // Confirmation with buttons for next steps
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '📋 View Status', callback_data: 'menu_status' }],
+        [{ text: '➕ Add Another', callback_data: 'menu_newapp' }]
+      ]
+    };
+    await sendWithKeyboard(
+      chatId,
+      `✅ Now monitoring ${email} for finance application submission.\n\nThe GM will be notified when the customer submits the form.`,
+      keyboard
     );
     return;
   }
@@ -201,6 +217,62 @@ async function onCallbackQuery(query) {
   
   // Acknowledge the callback
   await tg('answerCallbackQuery', { callback_query_id: query.id });
+  
+  // Menu button handlers
+  if (data === 'menu_newapp') {
+    await send(chatId, 'Please type: /newapp <email>\n\nExample: /newapp customer@email.com');
+    return;
+  }
+  
+  if (data === 'menu_status') {
+    const emails = Array.from(pendingQueue.keys());
+    if (emails.length === 0) {
+      await send(chatId, '📭 No applications are currently being monitored.');
+    } else {
+      let statusMsg = '📋 Currently Monitoring:\n\n';
+      emails.forEach((email, idx) => {
+        const entry = pendingQueue.get(email);
+        const timeAgo = Math.floor((Date.now() - entry.startedAt) / 60000);
+        statusMsg += `${idx + 1}. ${email}\n   ⏱️ ${timeAgo} min ago\n\n`;
+      });
+      statusMsg += `Total: ${emails.length} application(s)`;
+      await send(chatId, statusMsg);
+    }
+    return;
+  }
+  
+  if (data === 'menu_cancel') {
+    const emails = Array.from(pendingQueue.keys());
+    if (emails.length === 0) {
+      await send(chatId, '📭 No applications to cancel.');
+      return;
+    }
+    // Show cancel buttons for each email
+    const keyboard = {
+      inline_keyboard: emails.map(email => [
+        { text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }
+      ])
+    };
+    await sendWithKeyboard(chatId, 'Select which application to cancel:', keyboard);
+    return;
+  }
+  
+  if (data.startsWith('cancel_')) {
+    const email = data.replace('cancel_', '');
+    if (pendingQueue.has(email)) {
+      pendingQueue.delete(email);
+      saveQueue();
+      await tg('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: `✅ Cancelled monitoring for ${email}`,
+        reply_markup: JSON.stringify({ inline_keyboard: [] })
+      });
+    } else {
+      await send(chatId, `⚠️ ${email} is no longer being monitored.`);
+    }
+    return;
+  }
   
   if (data.startsWith('approve_')) {
     const approvalId = data.replace('approve_', '');

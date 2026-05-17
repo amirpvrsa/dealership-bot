@@ -404,7 +404,7 @@ async function onCallbackQuery(query) {
     const approval = pendingApprovals.get(approvalId);
     
     if (!approval) {
-      await send(chatId, '⚠️ This application has already been processed or expired.');
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Already processed' });
       return;
     }
     
@@ -501,7 +501,7 @@ async function onCallbackQuery(query) {
     const approval = pendingApprovals.get(approvalId);
     
     if (!approval) {
-      await send(chatId, '⚠️ This application has already been processed or expired.');
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Already processed' });
       return;
     }
     

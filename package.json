@@ -1,0 +1,17 @@
+{
+  "name": "dealership-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for car dealership finance application monitoring",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "googleapis": "^134.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: prio-auto-bot
+    runtime: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: HUBSPOT_TOKEN
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SHEET_NAME
+        value: Sheet1
+      - key: GOOGLE_SHEET_CELL
+        value: B2
+      - key: TELEGRAM_GROUP_CHAT_ID
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        sync: false
+      # Path to the Google Sheets service-account key file.
+      # On Render, upload service-account-key.json as a Secret File
+      # mounted at /etc/secrets/service-account-key.json (the default).
+      - key: GOOGLE_SERVICE_ACCOUNT_KEY_PATH
+        value: /etc/secrets/service-account-key.json

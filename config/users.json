@@ -1,0 +1,19 @@
+{
+  "general_managers": {
+    "John_GM": 123456789
+  },
+  "finance_managers": {
+    "Sarah_FM": 987654321,
+    "Mike_FM": 111222333
+  },
+  "sales_people": {
+    "Alex_Sales": 444555666,
+    "Brittany_Sales": 555666777,
+    "Chris_Sales": 666777888,
+    "Dana_Sales": 777888999,
+    "Eric_Sales": 888999000,
+    "Fiona_Sales": 999000111,
+    "George_Sales": 111222,
+    "Hannah_Sales": 111222444
+  }
+}

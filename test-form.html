@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Finance Application Test</title>
+    <style>
+        body { font-family: Arial; max-width: 400px; margin: 50px auto; padding: 20px; }
+        input, button { width: 100%; padding: 10px; margin: 10px 0; font-size: 16px; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #status { margin-top: 20px; padding: 10px; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h2>🚗 Finance Application Test</h2>
+    <form id="financeForm">
+        <input type="text" id="firstname" placeholder="First Name" required>
+        <input type="text" id="lastname" placeholder="Last Name" required>
+        <input type="email" id="email" placeholder="Email" required>
+        <input type="number" id="annual_income" placeholder="Annual Income" required>
+        <input type="text" id="phone" placeholder="Phone Number" required>
+        <input type="text" id="company" placeholder="Employer/Company">
+        <button type="submit">Submit Application</button>
+    </form>
+    <div id="status"></div>
+
+    <script>
+        document.getElementById('financeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const status = document.getElementById('status');
+            status.className = '';
+            status.textContent = 'Sending...';
+
+            const formData = {
+                fields: [
+                    { name: 'email', value: document.getElementById('email').value },
+                    { name: 'firstname', value: document.getElementById('firstname').value },
+                    { name: 'lastname', value: document.getElementById('lastname').value },
+                    { name: 'phone', value: document.getElementById('phone').value },
+                    { name: 'company', value: document.getElementById('company').value || '' },
+                    { name: 'annualrevenue', value: document.getElementById('annual_income').value }
+                ],
+                context: {
+                    pageUri: window.location.href,
+                    pageName: 'Finance Application Test'
+                }
+            };
+
+            try {
+                const PORTAL_ID = '343268812';
+                const FORM_ID = 'af04ed11-5bf5-4635-a319-59e9b1a345a1';
+
+                const response = await fetch(
+                    `https://api.hsforms.com/submissions/v3/integration/submit/${PORTAL_ID}/${FORM_ID}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(formData)
+                    }
+                );
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    status.className = 'success';
+                    status.innerHTML = '✅ Application submitted to HubSpot!';
+                } else {
+                    status.className = 'error';
+                    status.textContent = '❌ HubSpot Error: ' + (result.message || response.status);
+                }
+            } catch (err) {
+                status.className = 'error';
+                status.innerHTML = '❌ Failed to submit.';
+            }
+        });
+    </script>
+</body>
+</html>

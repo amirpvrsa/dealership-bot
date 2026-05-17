@@ -198,54 +198,52 @@ async function poll() {
 // ---------- HubSpot webhook ----------
 async function handleHubspotWebhook(req, res) {
   let body = '';
-  req.on('data', (chunk) => {
-    body += chunk;
-  });
+  req.on('data', (chunk) => { body += chunk; });
+  
   req.on('end', async () => {
-    log('=== /webhook/hubspot-form received ===');
-    log(`Raw body: ${body}`); // full body, no truncation
-
-    let data;
     try {
-      data = JSON.parse(body || '{}');
-    } catch (e) {
-      log(`Webhook body not valid JSON: ${e.message}`);
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
-      return;
-    }
+      log('=== /webhook/hubspot-form received ===');
+      log(`Raw body: ${body.substring(0, 200)}`);
 
-    const emailRaw = getField(data, 'email');
-    const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
-    if (!email) {
-      log('Webhook missing email field');
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'missing email' }));
-      return;
-    }
+      // Parse JSON
+      let data;
+      try {
+        data = JSON.parse(body || '{}');
+      } catch (e) {
+        log(`Webhook body not valid JSON: ${e.message}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+        return;
+      }
 
-    log(`Webhook email (normalised): ${email}`);
-    const queuedEntry = pendingQueue.get(email);
-    if (!queuedEntry) {
-      log(`Email ${email} not in queue — ignoring`);
-      // Respond 200 anyway so HubSpot doesn't retry
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, matched: false }));
-      return;
-    }
+      // Get email
+      const emailRaw = getField(data, 'email');
+      const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
+      if (!email) {
+        log('Webhook missing email field');
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'missing email' }));
+        return;
+      }
 
-    try {
-      // Normalise fields the scorer + notifier expect
+      log(`Webhook email (normalised): ${email}`);
+      
+      // Check if email is in queue
+      const queuedEntry = pendingQueue.get(email);
+      if (!queuedEntry) {
+        log(`Email ${email} not in queue — ignoring`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, matched: false }));
+        return;
+      }
+
+      // Email is in queue - process the form
       const formProperties = {
         Estimated_Credit_Rating: getField(data, 'Estimated_Credit_Rating'),
         Employment_Status: getField(data, 'Employment_Status'),
-        Your_monthly_income:
-          getField(data, 'Your_monthly_income') ?? getField(data, 'annualrevenue'),
+        Your_monthly_income: getField(data, 'Your_monthly_income') ?? getField(data, 'annualrevenue'),
         Rent_Own_None_a_House: getField(data, 'Rent_Own_None_a_House'),
-        How_long_have_you_been_receiving_this_income: getField(
-          data,
-          'How_long_have_you_been_receiving_this_income'
-        ),
+        How_long_have_you_been_receiving_this_income: getField(data, 'How_long_have_you_been_receiving_this_income'),
         Company: getField(data, 'Company') ?? getField(data, 'company'),
         Vehicle_Type: getField(data, 'Vehicle_Type'),
         Budget: getField(data, 'Budget')
@@ -269,49 +267,34 @@ async function handleHubspotWebhook(req, res) {
         fmName = await sheets.getNextFinanceManager();
       } catch (e) {
         log(`Failed to read next FM from Sheets: ${e.message}`);
-      }
-      if (!fmName) {
-        log('No FM name from Sheets — falling back to "Unknown"');
         fmName = 'Unknown';
       }
 
-      const result = await notifier.notifyFinanceManager(
-        contact,
-        formProperties,
-        scoreResult,
-        fmName
-      );
+      const result = await notifier.notifyFinanceManager(contact, formProperties, scoreResult, fmName);
       log(`Notification result: dmSent=${result.dmSent} groupSent=${result.groupSent}`);
 
-      // Ping the salesperson too
+      // Ping the salesperson
       if (queuedEntry.salespersonChatId) {
-        await send(
-          queuedEntry.salespersonChatId,
-          `✅ Application submitted for ${email}! Finance team notified (score ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}).`
-        );
+        await send(queuedEntry.salespersonChatId, `✅ Application submitted for ${email}! Finance team notified (score ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}).`);
       }
 
       pendingQueue.delete(email);
       saveQueue();
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          matched: true,
-          score: scoreResult.score,
-          fm: fmName
-        })
-      );
+      res.end(JSON.stringify({ ok: true, matched: true, score: scoreResult.score, fm: fmName }));
+      
     } catch (e) {
-      log(`Error processing webhook for ${email}: ${e.message}`);
+      log(`Webhook error: ${e.message}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'processing error' }));
+      res.end(JSON.stringify({ ok: false, error: e.message }));
     }
   });
 
   req.on('error', (err) => {
     log(`Webhook request error: ${err.message}`);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'request error' }));
   });
 }
 

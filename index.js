@@ -290,6 +290,32 @@ async function onMessage(msg) {
     return;
   }
 
+  if (cmd === '/testfm') {
+    const managersPath = path.join(__dirname, 'config', 'managers.json');
+    try {
+      const managersData = fs.readFileSync(managersPath, 'utf-8');
+      const managers = JSON.parse(managersData);
+      let msg = '📋 *Finance Managers in system:*\n\n';
+      for (const [name, id] of Object.entries(managers)) {
+        msg += `• ${name}: ${id}\n`;
+      }
+      await send(chatId, msg);
+      
+      // Try sending test to each FM
+      for (const [name, id] of Object.entries(managers)) {
+        try {
+          await send(id, `🧪 Test message from bot! You are registered as "${name}".`);
+          await send(chatId, `✅ Test sent to ${name} (${id})`);
+        } catch (e) {
+          await send(chatId, `❌ Failed to send to ${name} (${id}): ${e.message}`);
+        }
+      }
+    } catch (e) {
+      await send(chatId, `Error: ${e.message}`);
+    }
+    return;
+  }
+
   if (cmd === '/cancel' && arg) {
     const target = email;
     if (!pendingQueue.has(target)) {

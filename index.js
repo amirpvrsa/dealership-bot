@@ -384,19 +384,31 @@ async function onCallbackQuery(query) {
     
     const { email, contact, formProperties, scoreResult, fmName, salespersonChatId } = approval;
     
-    // Get FM's Telegram ID
+    // Get FM's Telegram ID - try exact match first, then partial match
     const managersPath = path.join(__dirname, 'config', 'managers.json');
     let fmChatId = null;
     try {
       const managersData = fs.readFileSync(managersPath, 'utf-8');
       const managers = JSON.parse(managersData);
+      // Try exact match
       fmChatId = managers[fmName];
+      // Try partial match (e.g., "Sarah" matches "Sarah_FM")
+      if (!fmChatId) {
+        const lowerName = fmName.toLowerCase();
+        for (const [key, value] of Object.entries(managers)) {
+          if (key.toLowerCase().includes(lowerName) || lowerName.includes(key.toLowerCase())) {
+            fmChatId = value;
+            log(`Matched FM "${fmName}" to managers.json key "${key}"`);
+            break;
+          }
+        }
+      }
     } catch (e) {
       log(`Could not read managers.json: ${e.message}`);
     }
     
     if (!fmChatId) {
-      await send(chatId, `⚠️ Could not find Telegram ID for Finance Manager "${fmName}".`);
+      await send(chatId, `⚠️ Could not find Telegram ID for Finance Manager "${fmName}". Check managers.json.`);
       return;
     }
     
@@ -596,7 +608,19 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
     try {
       const managersData = fs.readFileSync(managersPath, 'utf-8');
       const managers = JSON.parse(managersData);
+      // Try exact match
       fmChatId = managers[nextFmName];
+      // Try partial match
+      if (!fmChatId) {
+        const lowerName = nextFmName.toLowerCase();
+        for (const [key, value] of Object.entries(managers)) {
+          if (key.toLowerCase().includes(lowerName) || lowerName.includes(key.toLowerCase())) {
+            fmChatId = value;
+            log(`Matched FM "${nextFmName}" to managers.json key "${key}" in reassign`);
+            break;
+          }
+        }
+      }
     } catch (e) {
       log(`Could not read managers.json: ${e.message}`);
     }

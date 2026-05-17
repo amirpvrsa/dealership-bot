@@ -24,17 +24,17 @@ let offset = 0;
 const pendingApprovals = new Map();
 
 // ---------- FM assignment queue ----------
-const fmAssignments = new Map(); // email -> { fmName, contact, formProperties, scoreResult, assignedAt, messageId, chatId, timeoutId }
+const fmAssignments = new Map();
 
 // ---------- User state tracking ----------
-const userStates = new Map(); // chatId -> { state: 'idle'|'waiting_email', timestamp: number }
+const userStates = new Map();
 
 // ---------- logging ----------
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// ---------- persistent queue (Map at runtime, JSON on disk) ----------
+// ---------- persistent queue ----------
 const QUEUE_PATH = path.join(__dirname, 'queue.json');
 const pendingQueue = new Map();
 
@@ -44,72 +44,44 @@ function loadQueue() {
       log('No queue.json yet — starting with empty queue');
       return;
     }
-    const raw = fs.readFileSync(QUEUE_PATH, 'utf8');
-    const parsed = JSON.parse(raw || '{}');
-    for (const [email, data] of Object.entries(parsed)) {
-      const key = String(email).trim().toLowerCase();
-      pendingQueue.set(key, data);
+    const data = fs.readFileSync(QUEUE_PATH, 'utf-8');
+    const entries = JSON.parse(data);
+    pendingQueue.clear();
+    for (const [k, v] of entries) {
+      pendingQueue.set(k, v);
     }
-    log(`Loaded queue.json (${pendingQueue.size} entr${pendingQueue.size === 1 ? 'y' : 'ies'})`);
+    log(`Loaded ${pendingQueue.size} entries from queue.json`);
   } catch (e) {
-    log(`Failed to load queue.json: ${e.message}`);
+    log(`Failed to load queue: ${e.message}`);
   }
 }
 
 function saveQueue() {
   try {
-    const obj = {};
-    for (const [k, v] of pendingQueue.entries()) obj[k] = v;
-    fs.writeFileSync(QUEUE_PATH, JSON.stringify(obj, null, 2));
+    const entries = Array.from(pendingQueue.entries());
+    fs.writeFileSync(QUEUE_PATH, JSON.stringify(entries, null, 2));
   } catch (e) {
-    log(`Failed to save queue.json: ${e.message}`);
+    log(`Failed to save queue: ${e.message}`);
   }
 }
 
-// ---------- HubSpot payload helper ----------
-// Handles flat, fields[], values[], and properties{} payload shapes.
-function getField(data, name) {
-  if (!data || typeof data !== 'object') return undefined;
-
-  if (Object.prototype.hasOwnProperty.call(data, name)) {
-    const v = data[name];
-    if (v !== null && v !== undefined && v !== '') return v;
-  }
-
-  if (data.properties && typeof data.properties === 'object') {
-    if (Object.prototype.hasOwnProperty.call(data.properties, name)) {
-      const v = data.properties[name];
-      if (v !== null && v !== undefined && v !== '') return v;
-    }
-  }
-
-  for (const key of ['fields', 'values']) {
-    if (Array.isArray(data[key])) {
-      const hit = data[key].find(
-        (f) => f && (f.name === name || f.property === name || f.key === name)
-      );
-      if (hit) {
-        const v = hit.value ?? hit.val ?? hit.text;
-        if (v !== null && v !== undefined && v !== '') return v;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-// ---------- raw Telegram helper (used by command handlers) ----------
-async function tg(method, body) {
-  const res = await fetch(`${API}/${method}`, {
+// ---------- Telegram API ----------
+async function tg(method, params = {}) {
+  const url = `${API}/${method}`;
+  const body = JSON.stringify(params);
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body
   });
   const json = await res.json();
-  if (!json.ok) throw new Error(json.description);
+  if (!json.ok) {
+    throw new Error(json.description || `Telegram API error: ${method}`);
+  }
   return json.result;
 }
 
+// ---------- send helpers ----------
 async function send(chatId, text) {
   log(`SEND → ${chatId}: ${text.substring(0, 60)}`);
   await tg('sendMessage', { chat_id: chatId, text });
@@ -120,7 +92,6 @@ async function sendWithKeyboard(chatId, text, keyboard) {
   await tg('sendMessage', { chat_id: chatId, text, reply_markup: JSON.stringify(keyboard) });
 }
 
-// Send message with fixed reply keyboard (persistent buttons at bottom)
 async function sendWithReplyKeyboard(chatId, text, keyboard) {
   log(`SEND → ${chatId}: ${text.substring(0, 60)} [with reply keyboard]`);
   await tg('sendMessage', { 
@@ -134,16 +105,6 @@ async function sendWithReplyKeyboard(chatId, text, keyboard) {
   });
 }
 
-// Remove reply keyboard
-async function sendWithoutKeyboard(chatId, text) {
-  log(`SEND → ${chatId}: ${text.substring(0, 60)} [remove keyboard]`);
-  await tg('sendMessage', { 
-    chat_id: chatId, 
-    text, 
-    reply_markup: JSON.stringify({ remove_keyboard: true })
-  });
-}
-
 // ---------- Telegram command handler ----------
 async function onMessage(msg) {
   const chatId = msg.chat.id;
@@ -154,6 +115,53 @@ async function onMessage(msg) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(' ').trim();
   const email = arg.toLowerCase();
+
+  // Handle /cancel at any time
+  if (text === '/cancel') {
+    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+    await send(chatId, '❌ Cancelled. What would you like to do?');
+    return;
+  }
+
+  // Handle waiting for email state (BEFORE command checks)
+  const userState = userStates.get(chatId);
+  if (userState?.state === 'waiting_email') {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailRegex.test(text)) {
+      const email = text.toLowerCase().trim();
+      
+      if (pendingQueue.has(email)) {
+        await send(chatId, `⚠️ Email ${email} is already being monitored.`);
+        userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+        return;
+      }
+      
+      pendingQueue.set(email, {
+        contactId: null,
+        startedAt: Date.now(),
+        salespersonChatId: chatId
+      });
+      saveQueue();
+      
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '📋 View Status', callback_data: 'menu_status' }],
+          [{ text: '➕ Add Another', callback_data: 'menu_newapp' }]
+        ]
+      };
+      await sendWithKeyboard(
+        chatId,
+        `✅ Now monitoring ${email} for finance application submission.\n\nThe GM will be notified when the customer submits the form.`,
+        keyboard
+      );
+      
+      userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+      return;
+    } else {
+      await send(chatId, '⚠️ That doesn\'t look like a valid email. Please try again or type /cancel to abort.\n\nExample: customer@gmail.com');
+      return;
+    }
+  }
 
   // Handle reply keyboard buttons
   if (text === '➕ New App') {
@@ -209,70 +217,19 @@ async function onMessage(msg) {
     return;
   }
 
-  // Handle /cancel
-  if (text === '/cancel') {
-    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
-    await send(chatId, '❌ Cancelled. What would you like to do?');
-    return;
-  }
-
-  // Handle waiting for email state
-  const userState = userStates.get(chatId);
-  if (userState?.state === 'waiting_email') {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (emailRegex.test(text)) {
-      const email = text.toLowerCase().trim();
-      
-      if (pendingQueue.has(email)) {
-        await send(chatId, `⚠️ Email ${email} is already being monitored.`);
-        userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
-        return;
-      }
-      
-      pendingQueue.set(email, {
-        contactId: null,
-        startedAt: Date.now(),
-        salespersonChatId: chatId
-      });
-      saveQueue();
-      
-      // Confirmation with buttons
-      const keyboard = {
-        inline_keyboard: [
-          [{ text: '📋 View Status', callback_data: 'menu_status' }],
-          [{ text: '➕ Add Another', callback_data: 'menu_newapp' }]
-        ]
-      };
-      await sendWithKeyboard(
-        chatId,
-        `✅ Now monitoring ${email} for finance application submission.\n\nThe GM will be notified when the customer submits the form.`,
-        keyboard
-      );
-      
-      // Reset state
-      userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
-      return;
-    } else {
-      await send(chatId, '⚠️ That doesn\'t look like a valid email. Please try again or type /cancel to abort.\n\nExample: customer@gmail.com');
-      return;
-    }
-  }
-
+  // Commands
   if (cmd === '/start') {
-    // Fixed reply keyboard (persistent at bottom)
     const replyKeyboard = [
       ['➕ New App', '📋 Status'],
       ['❌ Cancel', '📊 My Stats']
     ];
     
-    // Send welcome with reply keyboard
     await sendWithReplyKeyboard(
       chatId,
       '🚗 *Dealership Bot*\n\nWelcome! Use the buttons below or type commands.',
       replyKeyboard
     );
     
-    // Also send inline buttons for quick actions
     const inlineKeyboard = {
       inline_keyboard: [
         [{ text: '➕ Start New Application', callback_data: 'menu_newapp' }],
@@ -289,7 +246,7 @@ async function onMessage(msg) {
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      await send(chatId, 'Invalid email format.');
+      await send(chatId, 'Please provide a valid email address.');
       return;
     }
     if (pendingQueue.has(email)) {
@@ -303,7 +260,6 @@ async function onMessage(msg) {
     });
     saveQueue();
     
-    // Confirmation with buttons for next steps
     const keyboard = {
       inline_keyboard: [
         [{ text: '📋 View Status', callback_data: 'menu_status' }],
@@ -324,32 +280,33 @@ async function onMessage(msg) {
       await send(chatId, 'No emails are currently being monitored.');
       return;
     }
-    await send(
-      chatId,
-      `📊 Currently monitoring ${emails.length} email(s):\n\n${emails.map((e) => `• ${e}`).join('\n')}`
-    );
+    let msg = '📋 Currently monitoring:\n';
+    emails.forEach((e, i) => {
+      const entry = pendingQueue.get(e);
+      const mins = Math.floor((Date.now() - entry.startedAt) / 60000);
+      msg += `${i + 1}. ${e} (${mins} min ago)\n`;
+    });
+    await send(chatId, msg);
     return;
   }
 
-  if (cmd === '/cancel') {
-    if (!email) {
-      await send(chatId, 'Usage: /cancel <email>');
+  if (cmd === '/cancel' && arg) {
+    const target = email;
+    if (!pendingQueue.has(target)) {
+      await send(chatId, `Email ${target} is not being monitored.`);
       return;
     }
-    if (!pendingQueue.has(email)) {
-      await send(chatId, `Email ${email} is not being monitored.`);
-      return;
-    }
-    pendingQueue.delete(email);
+    pendingQueue.delete(target);
     saveQueue();
-    await send(chatId, `❌ Stopped monitoring ${email}.`);
+    await send(chatId, `❌ Stopped monitoring ${target}.`);
     return;
   }
 
+  // Fallback
   await send(chatId, `You said: ${text}`);
 }
 
-// ---------- Callback query handler (GM approval buttons) ----------
+// ---------- Callback query handler ----------
 async function onCallbackQuery(query) {
   const chatId = query.message.chat.id;
   const messageId = query.message.message_id;
@@ -357,10 +314,9 @@ async function onCallbackQuery(query) {
   
   log(`CALLBACK ← ${chatId}: ${data}`);
   
-  // Acknowledge the callback
   await tg('answerCallbackQuery', { callback_query_id: query.id });
   
-  // Menu button handlers
+  // Menu buttons
   if (data === 'menu_newapp') {
     userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
     await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
@@ -372,7 +328,7 @@ async function onCallbackQuery(query) {
     if (emails.length === 0) {
       await send(chatId, '📭 No applications are currently being monitored.');
     } else {
-      let statusMsg = '📋 Currently Monitoring:\n\n';
+      let statusMsg = '📋 *Currently Monitoring:*\n\n';
       emails.forEach((email, idx) => {
         const entry = pendingQueue.get(email);
         const timeAgo = Math.floor((Date.now() - entry.startedAt) / 60000);
@@ -390,7 +346,6 @@ async function onCallbackQuery(query) {
       await send(chatId, '📭 No applications to cancel.');
       return;
     }
-    // Show cancel buttons for each email
     const keyboard = {
       inline_keyboard: emails.map(email => [
         { text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }
@@ -417,6 +372,7 @@ async function onCallbackQuery(query) {
     return;
   }
   
+  // GM Approval buttons
   if (data.startsWith('approve_')) {
     const approvalId = data.replace('approve_', '');
     const approval = pendingApprovals.get(approvalId);
@@ -426,9 +382,9 @@ async function onCallbackQuery(query) {
       return;
     }
     
-    const { email, contact, formProperties, scoreResult, fmName, salespersonChatId, queuedEntry } = approval;
+    const { email, contact, formProperties, scoreResult, fmName, salespersonChatId } = approval;
     
-    // Get FM's Telegram ID from managers
+    // Get FM's Telegram ID
     const managersPath = path.join(__dirname, 'config', 'managers.json');
     let fmChatId = null;
     try {
@@ -440,7 +396,7 @@ async function onCallbackQuery(query) {
     }
     
     if (!fmChatId) {
-      await send(chatId, `⚠️ Could not find Telegram ID for Finance Manager "${fmName}". Please check managers.json.`);
+      await send(chatId, `⚠️ Could not find Telegram ID for Finance Manager "${fmName}".`);
       return;
     }
     
@@ -478,7 +434,7 @@ async function onCallbackQuery(query) {
       reply_markup: JSON.stringify(keyboard)
     });
     
-    // Store assignment with 15-minute timeout (15 * 60 * 1000 = 900000 ms)
+    // 15-minute timeout
     const timeoutId = setTimeout(async () => {
       await handleFMTimeout(email, fmName);
     }, 15 * 60 * 1000);
@@ -495,14 +451,12 @@ async function onCallbackQuery(query) {
       timeoutId
     });
     
-    // Notify salesperson that FM assignment is pending
     if (salespersonChatId) {
       await send(salespersonChatId, `✅ GM Approved! Finance Manager (${fmName}) has been assigned for ${email}. Waiting for their response (15 min timeout). Score: ${scoreResult.score.toFixed(1)}/10`);
     }
     
-    // Remove from pending approvals
     pendingApprovals.delete(approvalId);
-    log(`GM approved application for ${email}, assigned to ${fmName} (ID: ${fmChatId})`);
+    log(`GM approved application for ${email}, assigned to ${fmName}`);
     
   } else if (data.startsWith('reject_')) {
     const approvalId = data.replace('reject_', '');
@@ -515,26 +469,22 @@ async function onCallbackQuery(query) {
     
     const { email, salespersonChatId } = approval;
     
-    // Update GM's message
     const updatedText = query.message.text + '\n\n❌ REJECTED - Application declined';
     await tg('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text: updatedText,
-      reply_markup: JSON.stringify({ inline_keyboard: [] }) // Remove buttons
+      reply_markup: JSON.stringify({ inline_keyboard: [] })
     });
     
-    // Notify salesperson of rejection
     if (salespersonChatId) {
       await send(salespersonChatId, `❌ Application for ${email} was rejected by GM.`);
     }
     
-    // Remove from pending approvals
     pendingApprovals.delete(approvalId);
     log(`GM rejected application for ${email}`);
     
   } else if (data.startsWith('fm_accept_')) {
-    // FM accepted the assignment
     const email = data.replace('fm_accept_', '');
     const assignment = fmAssignments.get(email);
     
@@ -543,14 +493,12 @@ async function onCallbackQuery(query) {
       return;
     }
     
-    const { fmName, contact, formProperties, scoreResult, salespersonChatId, messageId } = assignment;
+    const { fmName, contact, salespersonChatId, messageId } = assignment;
     
-    // Clear the timeout
     if (assignment.timeoutId) {
       clearTimeout(assignment.timeoutId);
     }
     
-    // Update FM's message
     const updatedText = query.message.text + '\n\n✅ *ACCEPTED* - You are now handling this application!';
     await tg('editMessageText', {
       chat_id: chatId,
@@ -559,17 +507,14 @@ async function onCallbackQuery(query) {
       reply_markup: JSON.stringify({ inline_keyboard: [] })
     });
     
-    // Notify salesperson that FM accepted
     if (salespersonChatId) {
       await send(salespersonChatId, `🎉 Finance Manager ${fmName} has *ACCEPTED* the application for ${email}! They will contact the customer.`);
     }
     
-    // Remove from assignments
     fmAssignments.delete(email);
     log(`FM ${fmName} accepted assignment for ${email}`);
     
   } else if (data.startsWith('fm_busy_')) {
-    // FM is busy - pass to next FM
     const email = data.replace('fm_busy_', '');
     const assignment = fmAssignments.get(email);
     
@@ -578,14 +523,12 @@ async function onCallbackQuery(query) {
       return;
     }
     
-    const { fmName, contact, formProperties, scoreResult, salespersonChatId, messageId, timeoutId } = assignment;
+    const { fmName, messageId, timeoutId } = assignment;
     
-    // Clear the timeout
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
     
-    // Update FM's message
     const updatedText = query.message.text + '\n\n❌ *DECLINED* - Assignment passed to next FM';
     await tg('editMessageText', {
       chat_id: chatId,
@@ -596,19 +539,17 @@ async function onCallbackQuery(query) {
     
     log(`FM ${fmName} declined assignment for ${email}`);
     
-    // Get next FM and reassign
-    await reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId);
+    await reassignToNextFM(email, assignment.contact, assignment.formProperties, assignment.scoreResult, assignment.salespersonChatId);
   }
 }
 
-// Handle FM timeout - reassign to next FM
+// ---------- FM timeout and reassignment ----------
 async function handleFMTimeout(email, currentFmName) {
   const assignment = fmAssignments.get(email);
-  if (!assignment) return; // Already handled
+  if (!assignment) return;
   
   const { fmChatId, messageId, contact, formProperties, scoreResult, salespersonChatId } = assignment;
   
-  // Update FM's message to show timeout
   await tg('editMessageText', {
     chat_id: fmChatId,
     message_id: messageId,
@@ -618,27 +559,22 @@ async function handleFMTimeout(email, currentFmName) {
   
   log(`FM ${currentFmName} timed out for ${email}`);
   
-  // Reassign to next FM
   await reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId, currentFmName);
 }
 
-// Reassign application to next FM
 async function reassignToNextFM(email, contact, formProperties, scoreResult, salespersonChatId, previousFmName = null) {
   try {
-    // Get next FM from sheets
     let nextFmName = await sheets.getNextFinanceManager();
     
-    // Skip if same as previous
     if (nextFmName === previousFmName) {
-      await send(FINANCE_CHAT_ID, `⚠️ Could not reassign ${email} - only one FM available in rotation.`);
+      await send(FINANCE_CHAT_ID, `⚠️ Could not reassign ${email} - only one FM available.`);
       if (salespersonChatId) {
-        await send(salespersonChatId, `⚠️ Application for ${email} could not be reassigned. Finance team will handle manually.`);
+        await send(salespersonChatId, `⚠️ Application for ${email} could not be reassigned.`);
       }
       fmAssignments.delete(email);
       return;
     }
     
-    // Get FM's Telegram ID
     const managersPath = path.join(__dirname, 'config', 'managers.json');
     let fmChatId = null;
     try {
@@ -650,12 +586,11 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
     }
     
     if (!fmChatId) {
-      await send(FINANCE_CHAT_ID, `⚠️ Could not find Telegram ID for Finance Manager "${nextFmName}".`);
+      await send(FINANCE_CHAT_ID, `⚠️ Could not find Telegram ID for "${nextFmName}".`);
       fmAssignments.delete(email);
       return;
     }
     
-    // Send to new FM
     const fmMessage = `🚨 *NEW APPLICATION REASSIGNED*\n\n` +
       `👤 Customer: ${contact.properties.firstname} ${contact.properties.lastname}\n` +
       `📧 Email: ${email}\n` +
@@ -681,12 +616,10 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
       reply_markup: JSON.stringify(keyboard)
     });
     
-    // Set new timeout
     const timeoutId = setTimeout(async () => {
       await handleFMTimeout(email, nextFmName);
     }, 15 * 60 * 1000);
     
-    // Update assignment
     fmAssignments.set(email, {
       fmName: nextFmName,
       fmChatId,
@@ -699,9 +632,8 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
       timeoutId
     });
     
-    // Notify salesperson
     if (salespersonChatId) {
-      await send(salespersonChatId, `🔄 Reassigned! Finance Manager (${nextFmName}) has been assigned for ${email}. Previous FM was unavailable. Waiting for response (15 min).`);
+      await send(salespersonChatId, `🔄 Reassigned! Finance Manager (${nextFmName}) has been assigned for ${email}. Previous FM was unavailable.`);
     }
     
     log(`Reassigned ${email} to ${nextFmName}`);
@@ -710,20 +642,6 @@ async function reassignToNextFM(email, contact, formProperties, scoreResult, sal
     log(`Error reassigning to next FM: ${e.message}`);
     fmAssignments.delete(email);
   }
-}
-
-async function poll() {
-  try {
-    const updates = await tg('getUpdates', { offset, timeout: 0 });
-    for (const u of updates) {
-      offset = u.update_id + 1;
-      if (u.message) await onMessage(u.message);
-      if (u.callback_query) await onCallbackQuery(u.callback_query);
-    }
-  } catch (e) {
-    log(`Poll error: ${e.message}`);
-  }
-  setTimeout(poll, 1000);
 }
 
 // ---------- HubSpot webhook ----------
@@ -736,7 +654,6 @@ async function handleHubspotWebhook(req, res) {
       log('=== /webhook/hubspot-form received ===');
       log(`Raw body: ${body.substring(0, 200)}`);
 
-      // Parse JSON
       let data;
       try {
         data = JSON.parse(body || '{}');
@@ -747,7 +664,15 @@ async function handleHubspotWebhook(req, res) {
         return;
       }
 
-      // Get email
+      function getField(obj, key) {
+        if (obj[key] !== undefined) return obj[key];
+        if (obj.fields && Array.isArray(obj.fields)) {
+          const found = obj.fields.find(f => f.name === key);
+          return found ? found.value : undefined;
+        }
+        return undefined;
+      }
+
       const emailRaw = getField(data, 'email');
       const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
       if (!email) {
@@ -759,7 +684,6 @@ async function handleHubspotWebhook(req, res) {
 
       log(`Webhook email (normalised): ${email}`);
       
-      // Check if email is in queue
       const queuedEntry = pendingQueue.get(email);
       if (!queuedEntry) {
         log(`Email ${email} not in queue — ignoring`);
@@ -768,7 +692,6 @@ async function handleHubspotWebhook(req, res) {
         return;
       }
 
-      // Email is in queue - process the form
       const formProperties = {
         Estimated_Credit_Rating: getField(data, 'Estimated_Credit_Rating'),
         Employment_Status: getField(data, 'Employment_Status'),
@@ -801,7 +724,7 @@ async function handleHubspotWebhook(req, res) {
         fmName = 'Unknown';
       }
 
-      // Store application data for GM approval
+      // Store for GM approval
       const approvalId = Date.now().toString();
       pendingApprovals.set(approvalId, {
         email,
@@ -834,7 +757,6 @@ async function handleHubspotWebhook(req, res) {
       await sendWithKeyboard(GM_CHAT_ID, gmMessage, keyboard);
       log(`Sent approval request to GM for ${email}`);
 
-      // Notify salesperson that form was received and is pending GM approval
       if (queuedEntry.salespersonChatId) {
         await send(queuedEntry.salespersonChatId, `✅ Application submitted for ${email}! Waiting for GM approval before notifying Finance team (score ${scoreResult.score.toFixed(1)}/10 ${scoreResult.emoji}).`);
       }
@@ -859,61 +781,53 @@ async function handleHubspotWebhook(req, res) {
   });
 }
 
-// ---------- HTTP server ----------
-function startServer() {
-  const port = process.env.PORT || 3000;
-  const server = http.createServer(async (req, res) => {
-    if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          service: 'prio-auto-bot',
-          queueSize: pendingQueue.size
-        })
-      );
-      return;
+// ---------- Polling loop ----------
+async function poll() {
+  try {
+    const updates = await tg('getUpdates', { offset, timeout: 0 });
+    for (const u of updates) {
+      offset = u.update_id + 1;
+      if (u.message) await onMessage(u.message);
+      if (u.callback_query) await onCallbackQuery(u.callback_query);
     }
-
-    if (req.method === 'POST' && req.url === '/webhook/hubspot-form') {
-      await handleHubspotWebhook(req, res);
-      return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: 'not found' }));
-  });
-
-  server.listen(port, () => {
-    log(`HTTP server listening on port ${port}`);
-    log(`Webhook path: /webhook/hubspot-form`);
-  });
+  } catch (e) {
+    log(`Poll error: ${e.message}`);
+  }
+  setTimeout(poll, 1000);
 }
 
-// ---------- boot ----------
+// ---------- Main ----------
 async function main() {
   log('Starting dealership-bot...');
-  if (!TOKEN) {
-    log('FATAL: TELEGRAM_BOT_TOKEN not set in environment');
-    process.exit(1);
-  }
-
+  
   loadQueue();
-  startServer();
-
+  
   const me = await tg('getMe');
   log(`Connected as @${me.username}`);
-
+  
   const stale = await tg('getUpdates', { offset: -1 });
   if (stale.length > 0) offset = stale[stale.length - 1].update_id + 1;
+  
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/webhook/hubspot-form') {
+      handleHubspotWebhook(req, res);
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+  });
+  
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => {
+    log(`HTTP server listening on port ${PORT}`);
+    log(`Webhook path: /webhook/hubspot-form`);
+  });
+  
   log('Telegram polling started');
   poll();
-
-  // NOTE: The legacy HubSpot poller (poller.js) is intentionally NOT started here.
-  // The new design is webhook-driven; poller.js will be removed or repurposed in a later step.
 }
 
-main().catch((e) => {
-  console.error('FATAL:', e.message);
+main().catch(e => {
+  console.error('Fatal error:', e);
   process.exit(1);
 });

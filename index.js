@@ -224,6 +224,7 @@ async function onMessage(msg) {
 
   // Commands
   if (cmd === '/start') {
+    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
     await showMainMenu(chatId);
     return;
   }

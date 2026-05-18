@@ -347,19 +347,22 @@ async function showMainMenu(chatId) {
     ['🏠 Home', '🔄 Restart']
   ];
   
-  await sendWithReplyKeyboard(
-    chatId,
-    '🚗 *Dealership Bot*\n\nWhat would you like to do?',
-    replyKeyboard
-  );
-  
-  const inlineKeyboard = {
-    inline_keyboard: [
-      [{ text: '📋 Financing Application', callback_data: 'menu_finance' }],
-      [{ text: '📚 How to Use', callback_data: 'menu_help' }]
-    ]
-  };
-  await sendWithKeyboard(chatId, 'Quick actions:', inlineKeyboard);
+  // Send ONE message with both reply keyboard and inline keyboard
+  // Note: Telegram allows both in same message via different markup types
+  log(`SEND → ${chatId}: PrioAutoSales menu`);
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: '🚗 *PrioAutoSales*\n\nWhat would you like to do?\n\nOr tap below:',
+    reply_markup: JSON.stringify({
+      keyboard: replyKeyboard,
+      resize_keyboard: true,
+      one_time_keyboard: false,
+      inline_keyboard: [
+        [{ text: '📋 Financing Application', callback_data: 'menu_finance' }],
+        [{ text: '📚 How to Use', callback_data: 'menu_help' }]
+      ]
+    })
+  });
 }
 
 async function onCallbackQuery(query) {

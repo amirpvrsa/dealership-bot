@@ -123,9 +123,9 @@ async function onMessage(msg) {
     return;
   }
 
-  // Handle waiting for email state (BEFORE command checks)
+  // Handle waiting for email state (BEFORE command checks, but skip slash commands)
   const userState = userStates.get(chatId);
-  if (userState?.state === 'waiting_email') {
+  if (userState?.state === 'waiting_email' && !text.startsWith('/')) {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (emailRegex.test(text)) {
       const email = text.toLowerCase().trim();

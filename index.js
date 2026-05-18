@@ -339,7 +339,6 @@ async function showMainMenu(chatId) {
   
   const inlineKeyboard = {
     inline_keyboard: [
-      [{ text: '➕ Start New Application', callback_data: 'menu_newapp' }],
       [{ text: '📚 How to Use', callback_data: 'menu_help' }]
     ]
   };

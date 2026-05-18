@@ -221,6 +221,20 @@ async function onMessage(msg) {
     await sendWithKeyboard(chatId, statsMsg, keyboard);
     return;
   }
+  
+  if (text === '🏠 Home') {
+    await showMainMenu(chatId);
+    return;
+  }
+  
+  if (text === '🔄 Restart') {
+    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
+    pendingQueue.clear();
+    saveQueue();
+    await send(chatId, '🔄 Bot restarted! Queue cleared.');
+    await showMainMenu(chatId);
+    return;
+  }
 
   // Commands
   if (cmd === '/start') {
@@ -329,7 +343,8 @@ function backButton() {
 async function showMainMenu(chatId) {
   const replyKeyboard = [
     ['➕ New App', '📋 Status'],
-    ['❌ Cancel', '📊 My Stats']
+    ['❌ Cancel', '📊 My Stats'],
+    ['🏠 Home', '🔄 Restart']
   ];
   
   await sendWithReplyKeyboard(
@@ -340,6 +355,7 @@ async function showMainMenu(chatId) {
   
   const inlineKeyboard = {
     inline_keyboard: [
+      [{ text: '📋 Financing Application', callback_data: 'menu_finance' }],
       [{ text: '📚 How to Use', callback_data: 'menu_help' }]
     ]
   };
@@ -365,6 +381,18 @@ async function onCallbackQuery(query) {
   if (data === 'menu_newapp') {
     userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
     await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
+    return;
+  }
+  
+  if (data === 'menu_finance') {
+    const formUrl = process.env.FINANCE_FORM_URL || 'https://app.hubspot.com/your-form-link';
+    const msg = `📋 *Financing Application*\n\n` +
+      `Share this link with your customer:\n\n` +
+      `${formUrl}\n\n` +
+      `The customer should fill out this form with their email address. ` +
+      `Once submitted, the GM and Finance team will be notified automatically.`;
+    const keyboard = { inline_keyboard: [backButton()] };
+    await sendWithKeyboard(chatId, msg, keyboard);
     return;
   }
   

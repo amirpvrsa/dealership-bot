@@ -284,40 +284,27 @@ function backButton() {
 }
 
 async function showMainMenu(chatId) {
-  // Persistent bottom keyboard - just Home & Restart for quick navigation
-  const replyKeyboard = [
-    ['🏠 Home', '🔄 Restart']
-  ];
-  
   log(`SEND → ${chatId}: PrioAutoSales main menu`);
   
-  // Set persistent reply keyboard (invisible message)
+  // ONE message with reply keyboard + inline keyboard
   await tg('sendMessage', {
     chat_id: chatId,
     text: '🚗 *PrioAutoSales*\n\nWelcome! Choose an action below.',
     parse_mode: 'Markdown',
     reply_markup: JSON.stringify({
-      keyboard: replyKeyboard,
-      resize_keyboard: true,
-      one_time_keyboard: false
+      inline_keyboard: [
+        [{ text: '➕  Add New Finance Application', callback_data: 'menu_newapp' }],
+        [
+          { text: '📊 My Deals', callback_data: 'menu_status' },
+          { text: '📈 Stats', callback_data: 'menu_stats' }
+        ],
+        [
+          { text: '📚 How It Works', callback_data: 'menu_help' },
+          { text: '⚙️ Settings', callback_data: 'menu_settings' }
+        ]
+      ]
     })
   });
-  
-  // Main action menu (inline buttons)
-  const inlineKeyboard = {
-    inline_keyboard: [
-      [{ text: '�  START NEW DEAL  🚀', callback_data: 'menu_newapp' }],
-      [
-        { text: '📊 My Deals', callback_data: 'menu_status' },
-        { text: '📈 Stats', callback_data: 'menu_stats' }
-      ],
-      [
-        { text: '📚 How It Works', callback_data: 'menu_help' },
-        { text: '⚙️ Settings', callback_data: 'menu_settings' }
-      ]
-    ]
-  };
-  await sendWithKeyboard(chatId, '👇 *What would you like to do?*', inlineKeyboard);
 }
 
 async function onCallbackQuery(query) {

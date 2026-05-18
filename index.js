@@ -145,93 +145,36 @@ async function onMessage(msg) {
       
       const keyboard = {
         inline_keyboard: [
-          [{ text: '📋 View Status', callback_data: 'menu_status' }],
-          [{ text: '➕ Add Another', callback_data: 'menu_newapp' }]
+          [{ text: '� Check Status', callback_data: 'menu_status' }],
+          [{ text: '🚀 Start Another Deal', callback_data: 'menu_newapp' }],
+          [{ text: '🏠 Home', callback_data: 'menu_back' }]
         ]
       };
       await sendWithKeyboard(
         chatId,
-        `✅ Now monitoring ${email} for finance application submission.\n\nThe GM will be notified when the customer submits the form.`,
+        `✅ *Deal Started!*\n\n📧 Monitoring: ${email}\n⏱️ Waiting for customer to submit form...\n\nThe GM will be notified automatically when submitted.`,
         keyboard
       );
       
       userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
       return;
     } else {
-      await send(chatId, '⚠️ That doesn\'t look like a valid email. Please try again or type /cancel to abort.\n\nExample: customer@gmail.com');
+      const keyboard = { inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'menu_back' }]] };
+      await sendWithKeyboard(chatId, '⚠️ That doesn\'t look like a valid email.\n\nPlease try again or tap Cancel.\n\n_Example: customer@gmail.com_', keyboard);
       return;
     }
   }
 
-  // Handle reply keyboard buttons
-  if (text === '➕ New App') {
-    userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
-    await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
-    return;
-  }
-  
-  if (text === '📋 Status') {
-    const emails = Array.from(pendingQueue.keys());
-    if (emails.length === 0) {
-      const keyboard = { inline_keyboard: [backButton()] };
-      await sendWithKeyboard(chatId, '📭 No applications are currently being monitored.', keyboard);
-    } else {
-      let statusMsg = '📋 *Currently Monitoring:*\n\n';
-      emails.forEach((email, idx) => {
-        const entry = pendingQueue.get(email);
-        const timeAgo = Math.floor((Date.now() - entry.startedAt) / 60000);
-        statusMsg += `${idx + 1}. ${email}\n   ⏱️ ${timeAgo} min ago\n\n`;
-      });
-      statusMsg += `Total: ${emails.length} application(s)`;
-      const keyboard = { inline_keyboard: [backButton()] };
-      await sendWithKeyboard(chatId, statusMsg, keyboard);
-    }
-    return;
-  }
-  
-  if (text === '❌ Cancel') {
-    const emails = Array.from(pendingQueue.keys());
-    if (emails.length === 0) {
-      const keyboard = { inline_keyboard: [backButton()] };
-      await sendWithKeyboard(chatId, '📭 No applications to cancel.', keyboard);
-    } else {
-      const keyboard = {
-        inline_keyboard: [
-          ...emails.map(email => [{ text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }]),
-          backButton()
-        ]
-      };
-      await sendWithKeyboard(chatId, 'Select which application to cancel:', keyboard);
-    }
-    return;
-  }
-  
-  if (text === '📊 My Stats') {
-    const emails = Array.from(pendingQueue.keys());
-    const total = emails.length;
-    const yours = emails.filter(e => pendingQueue.get(e).salespersonChatId === chatId).length;
-    
-    let statsMsg = '📊 *Your Stats*\n\n';
-    statsMsg += `Total Active Applications: ${total}\n`;
-    statsMsg += `Your Applications: ${yours}\n`;
-    if (total > 0) {
-      statsMsg += `\nYou have ${yours} application(s) pending submission.`;
-    }
-    const keyboard = { inline_keyboard: [backButton()] };
-    await sendWithKeyboard(chatId, statsMsg, keyboard);
-    return;
-  }
-  
+  // Handle persistent bottom reply keyboard buttons
   if (text === '🏠 Home') {
+    userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
     await showMainMenu(chatId);
     return;
   }
   
   if (text === '🔄 Restart') {
     userStates.set(chatId, { state: 'idle', timestamp: Date.now() });
-    pendingQueue.clear();
-    saveQueue();
-    await send(chatId, '🔄 Bot restarted! Queue cleared.');
+    await send(chatId, '🔄 *Bot Restarted!*\n\nState cleared.');
     await showMainMenu(chatId);
     return;
   }
@@ -341,28 +284,40 @@ function backButton() {
 }
 
 async function showMainMenu(chatId) {
+  // Persistent bottom keyboard - just Home & Restart for quick navigation
   const replyKeyboard = [
-    ['➕ New App', '📋 Status'],
-    ['❌ Cancel', '📊 My Stats'],
     ['🏠 Home', '🔄 Restart']
   ];
   
-  // Send ONE message with both reply keyboard and inline keyboard
-  // Note: Telegram allows both in same message via different markup types
-  log(`SEND → ${chatId}: PrioAutoSales menu`);
+  log(`SEND → ${chatId}: PrioAutoSales main menu`);
+  
+  // Set persistent reply keyboard (invisible message)
   await tg('sendMessage', {
     chat_id: chatId,
-    text: '🚗 *PrioAutoSales*\n\nWhat would you like to do?\n\nOr tap below:',
+    text: '🚗 *PrioAutoSales*\n\nWelcome! Choose an action below.',
+    parse_mode: 'Markdown',
     reply_markup: JSON.stringify({
       keyboard: replyKeyboard,
       resize_keyboard: true,
-      one_time_keyboard: false,
-      inline_keyboard: [
-        [{ text: '📋 Financing Application', callback_data: 'menu_finance' }],
-        [{ text: '📚 How to Use', callback_data: 'menu_help' }]
-      ]
+      one_time_keyboard: false
     })
   });
+  
+  // Main action menu (inline buttons)
+  const inlineKeyboard = {
+    inline_keyboard: [
+      [{ text: '�  START NEW DEAL  🚀', callback_data: 'menu_newapp' }],
+      [
+        { text: '📊 My Deals', callback_data: 'menu_status' },
+        { text: '📈 Stats', callback_data: 'menu_stats' }
+      ],
+      [
+        { text: '📚 How It Works', callback_data: 'menu_help' },
+        { text: '⚙️ Settings', callback_data: 'menu_settings' }
+      ]
+    ]
+  };
+  await sendWithKeyboard(chatId, '👇 *What would you like to do?*', inlineKeyboard);
 }
 
 async function onCallbackQuery(query) {
@@ -383,7 +338,27 @@ async function onCallbackQuery(query) {
   // Menu buttons
   if (data === 'menu_newapp') {
     userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
-    await send(chatId, '📝 *Please type the customer email address:*\n\nExample: customer@gmail.com\n\nType /cancel to abort.');
+    const keyboard = { inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'menu_back' }]] };
+    await sendWithKeyboard(chatId, '📝 *Enter the customer\'s email address:*\n\n_Example: customer@gmail.com_', keyboard);
+    return;
+  }
+  
+  if (data === 'menu_stats') {
+    const emails = Array.from(pendingQueue.keys());
+    const total = emails.length;
+    const yours = emails.filter(e => pendingQueue.get(e).salespersonChatId === chatId).length;
+    let statsMsg = '📈 *Your Stats*\n\n';
+    statsMsg += `Total Active: ${total}\n`;
+    statsMsg += `Your Deals: ${yours}\n`;
+    const keyboard = { inline_keyboard: [backButton()] };
+    await sendWithKeyboard(chatId, statsMsg, keyboard);
+    return;
+  }
+  
+  if (data === 'menu_settings') {
+    const msg = '⚙️ *Settings*\n\nNo configurable settings yet. Coming soon!';
+    const keyboard = { inline_keyboard: [backButton()] };
+    await sendWithKeyboard(chatId, msg, keyboard);
     return;
   }
   
@@ -400,16 +375,18 @@ async function onCallbackQuery(query) {
   }
   
   if (data === 'menu_help') {
-    const helpText = `📚 *How to Use PrioAutoSales*\n\n` +
-      `1️⃣ Click *➕ New App* and type customer email\n` +
-      `2️⃣ Send the form link to customer\n` +
-      `3️⃣ When customer submits, GM reviews & approves\n` +
-      `4️⃣ Finance Manager accepts & contacts customer\n\n` +
-      `*Commands:*\n` +
-      `• /start - Main menu\n` +
-      `• /newapp <email> - Add application\n` +
-      `• /status - View active applications\n` +
-      `• /cancel <email> - Remove application\n` +
+    const helpText = `📚 *How PrioAutoSales Works*\n\n` +
+      `*The Workflow:*\n\n` +
+      `1️⃣ You click *🚀 START NEW DEAL*\n` +
+      `2️⃣ Enter the customer's email\n` +
+      `3️⃣ Share the financing form link with customer\n` +
+      `4️⃣ Customer submits the form\n` +
+      `5️⃣ GM reviews & approves the deal\n` +
+      `6️⃣ Finance Manager accepts & contacts customer\n` +
+      `7️⃣ You get notified at every step\n\n` +
+      `*Quick Commands:*\n` +
+      `• /start - Return to main menu\n` +
+      `• /cancel - Exit current action\n` +
       `• /testfm - Test FM connections`;
     
     const keyboard = { inline_keyboard: [backButton()] };

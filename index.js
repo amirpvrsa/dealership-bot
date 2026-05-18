@@ -400,7 +400,7 @@ async function onCallbackQuery(query) {
   }
   
   if (data === 'menu_help') {
-    const helpText = `📚 *How to Use Dealership Bot*\n\n` +
+    const helpText = `📚 *How to Use PrioAutoSales*\n\n` +
       `1️⃣ Click *➕ New App* and type customer email\n` +
       `2️⃣ Send the form link to customer\n` +
       `3️⃣ When customer submits, GM reviews & approves\n` +

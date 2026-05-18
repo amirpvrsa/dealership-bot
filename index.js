@@ -173,7 +173,8 @@ async function onMessage(msg) {
   if (text === '📋 Status') {
     const emails = Array.from(pendingQueue.keys());
     if (emails.length === 0) {
-      await send(chatId, '📭 No applications are currently being monitored.');
+      const keyboard = { inline_keyboard: [backButton()] };
+      await sendWithKeyboard(chatId, '📭 No applications are currently being monitored.', keyboard);
     } else {
       let statusMsg = '📋 *Currently Monitoring:*\n\n';
       emails.forEach((email, idx) => {
@@ -182,7 +183,8 @@ async function onMessage(msg) {
         statusMsg += `${idx + 1}. ${email}\n   ⏱️ ${timeAgo} min ago\n\n`;
       });
       statusMsg += `Total: ${emails.length} application(s)`;
-      await send(chatId, statusMsg);
+      const keyboard = { inline_keyboard: [backButton()] };
+      await sendWithKeyboard(chatId, statusMsg, keyboard);
     }
     return;
   }
@@ -190,12 +192,14 @@ async function onMessage(msg) {
   if (text === '❌ Cancel') {
     const emails = Array.from(pendingQueue.keys());
     if (emails.length === 0) {
-      await send(chatId, '📭 No applications to cancel.');
+      const keyboard = { inline_keyboard: [backButton()] };
+      await sendWithKeyboard(chatId, '📭 No applications to cancel.', keyboard);
     } else {
       const keyboard = {
-        inline_keyboard: emails.map(email => [
-          { text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }
-        ])
+        inline_keyboard: [
+          ...emails.map(email => [{ text: `❌ Cancel ${email}`, callback_data: `cancel_${email}` }]),
+          backButton()
+        ]
       };
       await sendWithKeyboard(chatId, 'Select which application to cancel:', keyboard);
     }
@@ -213,30 +217,14 @@ async function onMessage(msg) {
     if (total > 0) {
       statsMsg += `\nYou have ${yours} application(s) pending submission.`;
     }
-    await send(chatId, statsMsg);
+    const keyboard = { inline_keyboard: [backButton()] };
+    await sendWithKeyboard(chatId, statsMsg, keyboard);
     return;
   }
 
   // Commands
   if (cmd === '/start') {
-    const replyKeyboard = [
-      ['➕ New App', '📋 Status'],
-      ['❌ Cancel', '📊 My Stats']
-    ];
-    
-    await sendWithReplyKeyboard(
-      chatId,
-      '🚗 *Dealership Bot*\n\nWelcome! Use the buttons below or type commands.',
-      replyKeyboard
-    );
-    
-    const inlineKeyboard = {
-      inline_keyboard: [
-        [{ text: '➕ Start New Application', callback_data: 'menu_newapp' }],
-        [{ text: '📚 How to Use', callback_data: 'menu_help' }]
-      ]
-    };
-    await sendWithKeyboard(chatId, 'Quick actions:', inlineKeyboard);
+    await showMainMenu(chatId);
     return;
   }
 
@@ -333,6 +321,31 @@ async function onMessage(msg) {
 }
 
 // ---------- Callback query handler ----------
+function backButton() {
+  return [{ text: '🔙 Back to Menu', callback_data: 'menu_back' }];
+}
+
+async function showMainMenu(chatId) {
+  const replyKeyboard = [
+    ['➕ New App', '📋 Status'],
+    ['❌ Cancel', '📊 My Stats']
+  ];
+  
+  await sendWithReplyKeyboard(
+    chatId,
+    '🚗 *Dealership Bot*\n\nWhat would you like to do?',
+    replyKeyboard
+  );
+  
+  const inlineKeyboard = {
+    inline_keyboard: [
+      [{ text: '➕ Start New Application', callback_data: 'menu_newapp' }],
+      [{ text: '📚 How to Use', callback_data: 'menu_help' }]
+    ]
+  };
+  await sendWithKeyboard(chatId, 'Quick actions:', inlineKeyboard);
+}
+
 async function onCallbackQuery(query) {
   const chatId = query.message.chat.id;
   const messageId = query.message.message_id;
@@ -342,6 +355,12 @@ async function onCallbackQuery(query) {
   
   await tg('answerCallbackQuery', { callback_query_id: query.id });
   
+  // Back to menu
+  if (data === 'menu_back') {
+    await showMainMenu(chatId);
+    return;
+  }
+  
   // Menu buttons
   if (data === 'menu_newapp') {
     userStates.set(chatId, { state: 'waiting_email', timestamp: Date.now() });
@@ -349,10 +368,29 @@ async function onCallbackQuery(query) {
     return;
   }
   
+  if (data === 'menu_help') {
+    const helpText = `📚 *How to Use Dealership Bot*\n\n` +
+      `1️⃣ Click *➕ New App* and type customer email\n` +
+      `2️⃣ Send the form link to customer\n` +
+      `3️⃣ When customer submits, GM reviews & approves\n` +
+      `4️⃣ Finance Manager accepts & contacts customer\n\n` +
+      `*Commands:*\n` +
+      `• /start - Main menu\n` +
+      `• /newapp <email> - Add application\n` +
+      `• /status - View active applications\n` +
+      `• /cancel <email> - Remove application\n` +
+      `• /testfm - Test FM connections`;
+    
+    const keyboard = { inline_keyboard: [backButton()] };
+    await sendWithKeyboard(chatId, helpText, keyboard);
+    return;
+  }
+  
   if (data === 'menu_status') {
     const emails = Array.from(pendingQueue.keys());
     if (emails.length === 0) {
-      await send(chatId, '📭 No applications are currently being monitored.');
+      const keyboard = { inline_keyboard: [backButton()] };
+      await sendWithKeyboard(chatId, '📭 No applications are currently being monitored.', keyboard);
     } else {
       let statusMsg = '📋 *Currently Monitoring:*\n\n';
       emails.forEach((email, idx) => {
@@ -361,7 +399,8 @@ async function onCallbackQuery(query) {
         statusMsg += `${idx + 1}. ${email}\n   ⏱️ ${timeAgo} min ago\n\n`;
       });
       statusMsg += `Total: ${emails.length} application(s)`;
-      await send(chatId, statusMsg);
+      const keyboard = { inline_keyboard: [backButton()] };
+      await sendWithKeyboard(chatId, statusMsg, keyboard);
     }
     return;
   }
